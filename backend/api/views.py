@@ -142,7 +142,7 @@ def analyze_travel_intent_with_llama(user_message):
     """
     Utilise Llama pour analyser l'intention de voyage.
     """
-    prompt = f"""Tu es un expert en analyse de voyages. Analyse cette demande et retourne UNIQUEMENT du JSON valide.
+    prompt = f"""Tu es un assistant d'analyse d'intention de voyage.Ton rôle est d'extraire les préférences STRICTEMENT au format JSON.Ne dis RIEN d'autre que l'objet JSON.
 
 Message: "{user_message}"
 
@@ -178,10 +178,13 @@ def extract_intent_manual(message):
     """
     Fallback manuel si Llama échoue.
     """
+    # 💡 L'erreur précédente 'message_lower' non défini se produit si cette ligne
+    # n'est pas la première instruction. Elle est correctement placée ici.
     message_lower = message.lower()
+    
     intent = {
-        "destination": "Tunis",
-        "budget": 100,
+        "destination": "Tunis", # Destination par défaut
+        "budget": 100,          # Budget par défaut (en DT, pour le scraping)
         "type_hebergement": "hôtel",
         "duree": 3,
         "personnes": 2,
@@ -199,24 +202,36 @@ def extract_intent_manual(message):
         intent["destination"] = "Rome"
     elif 'dubai' in message_lower:
         intent["destination"] = "Dubaï"
+    # ✅ CORRECTION: Ajout des destinations tunisiennes spécifiques (pour override Tunis par défaut)
+    elif 'hammamet' in message_lower or 'hamamet' in message_lower:
+        intent["destination"] = "Hammamet"
+    elif 'sousse' in message_lower:
+        intent["destination"] = "Sousse"
+    elif 'djerba' in message_lower:
+        intent["destination"] = "Djerba"
 
     # Détection budget
     budget_match = re.search(r'(\d+)\s*(dt|dinars|euros?|€)', message_lower)
     if budget_match:
         intent["budget"] = int(budget_match.group(1))
+        # Conversion Euro -> Dinars (approximation 1 EUR ≈ 3 TND)
         if 'euro' in message_lower or '€' in message_lower:
             intent["budget"] = intent["budget"] * 3
     
-    # Détection intérêts
+    # Détection intérêts (utilisation de "not in" pour éviter les doublons)
     if 'plage' in message_lower or 'mer' in message_lower:
-        intent["interets"].append("plage")
+        if "plage" not in intent["interets"]:
+            intent["interets"].append("plage")
+            
     if 'culture' in message_lower or 'musée' in message_lower:
-        intent["interets"].append("culture")
+        if "culture" not in intent["interets"]:
+            intent["interets"].append("culture")
+            
     if 'nature' in message_lower or 'montagne' in message_lower:
-        intent["interets"].append("nature")
+        if "nature" not in intent["interets"]:
+            intent["interets"].append("nature")
     
     return intent
-
 # -----------------------------
 # SCRAPING
 # -----------------------------
@@ -254,7 +269,7 @@ def scrape_tripadvisor(destination, budget):
         import random
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         search_url = f"https://www.tripadvisor.com/Search?q={destination}+hotel"
-        response = requests.get(search_url, headers=headers, timeout=10)
+        response = requests.get(search_url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         offers = []
         cards = soup.find_all('div', class_=re.compile(r'result|listing|card|property'))
@@ -371,7 +386,7 @@ Destination: {destination}
 Budget: {budget} DT
 Nombre d'offres trouvées: {len(annonces)}
 
-Fais un résumé friendly en 2-3 phrases maximum.'''
+Fais un résumé friendly en 1-2 phrases maximum.'''
 
         ai_response = call_llama_api(prompt_reponse)
 
