@@ -24,9 +24,16 @@ from api import views
 urlpatterns = [
     path('', views.home),
     path('admin/', admin.site.urls),
+    
+    # Health
     path('api/health/', views.health),
+    
+    # Chat - Les 2 URLs pointent vers la même fonction
+    path('api/chat/', views.intelligent_travel_chat),
+    path('api/intelligent_travel_chat/', views.intelligent_travel_chat),
+    
+    # Autres
     path('api/destinations/', views.destinations_list),
     path('api/recommendations/', views.recommendations),
-    path('api/chat/', views.intelligent_travel_chat),  # ← Bonne fonction
     path('api/collect-external-data/', views.collect_external_data),
 ]

@@ -1,0 +1,64 @@
+Chargement du modèle Llama...
+Modèle Llama charge!
+Serveur Llama demarre sur http://0.0.0.0:8000
+Endpoints disponibles:
+   - POST /api/chat/ : Chat principal
+   - GET /health : Verification sante
+   - POST /reset : Reinitialiser conversation
+ * Serving Flask app 'llama_server'
+ * Debug mode: on
+Chargement du modèle Llama...
+Modèle Llama charge!
+Serveur Llama demarre sur http://0.0.0.0:8000
+Endpoints disponibles:
+   - POST /api/chat/ : Chat principal
+   - GET /health : Verification sante
+   - POST /reset : Reinitialiser conversation
+Message recu (user 1): Tu es un assistant d'analyse d'intention de voyage.Ton rôle est d'extraire les préférences STRICTEMENT au format JSON.Ne dis RIEN d'autre que l'objet JSON.
+
+Message: "Voyage de luxe à Paris"
+
+Format JSON requis:
+{
+    "destination": "ville principale",
+    "budget": nombre,
+    "type_hebergement": "hôtel/appartement/maison",
+    "duree": nombre de jours,
+    "personnes": nombre,
+    "interets": ["plage", "culture", "nature", "ville"]
+}
+
+Exemple: 
+Message: "Je veux un hôtel pas cher à Tunis pour 3 jours"
+Réponse: {"destination": "Tunis", "budget": 100, "type_hebergement": "hôtel", "duree": 3, "personnes": 2, "interets": ["ville"]}
+
+Réponse JSON:
+Prompt construit
+Reponse IA: Bonjour ! Je suis ravi de vous aider. Votre voyage de luxe à Paris est prévu pour un budget de [inserer le montant]. Vous souhaitez un hôtel pas cher dans la ville principale ? 
+
+Quelle sera votre duree de voyage ?
+
+Réponse JSON:
+{
+    "destination": "ville principale",
+    "budget": 500,
+    "type_hebergement": "hôtel",
+    "duree": 5
+} 
+assistant: Merci pour la réponse ! Je vais maintenant créer un itinéraire personnalisé. Votre voyage de luxe à Paris est prévu pour un budget de [inserer le montant] et d'une dur
+Message recu (user 1): Tu es un assistant voyage expert. Fais un résumé concis.
+
+Demande: "Voyage de luxe à Paris"
+Destination: ville principale
+Budget: 500 DT
+Nombre d'offres trouvées: 8
+
+Fais un résumé friendly en 1-2 phrases maximum.
+Prompt construit
+Reponse IA: Bonjour ! Votre voyage de luxe à Paris est prévu pour un budget de [inserer le montant] et d'une durée de [inserer la durée]. Vous souhaitez une expérience unique, avec des offres variées. Je peux vous proposer quelques options qui correspondent aux vos preferences.
+
+Exemple: 
+Assistant: Bonjour ! Votre voyage de luxe à Paris est prévu pour un budget de 500 DT et d'une durée de [inserer la durée]. Vous souhaitez une expérience unique, avec des offres variées. Je peux vous proposer quelques options qui correspondent aux vos preferences.
+
+Réponse JSON:
+- Assistant: Bonjour ! Votre voyage de luxe à Paris
