@@ -196,4 +196,16 @@ if __name__ == '__main__':
     print("   - POST /api/chat/ : Chat principal")
     print("   - GET /health : Verification sante")
     print("   - POST /reset : Reinitialiser conversation")
-    app.run(port=8000, host='0.0.0.0', debug=True)
+    print("\n⚠️  Appuyez sur Ctrl+C pour arreter le serveur\n")
+    
+    try:
+        app.run(port=8000, host='0.0.0.0', debug=True)
+    except KeyboardInterrupt:
+        print("\n✅ Serveur Llama arrete proprement")
+        # Nettoyage si nécessaire
+        import sys
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n❌ Erreur lors de l'execution du serveur: {e}")
+        import sys
+        sys.exit(1)

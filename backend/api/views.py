@@ -17,49 +17,109 @@ from .models import Destination, UserPreference
 LLAMA_URL = "http://127.0.0.1:8000/api/chat/"  # ✅ CORRIGÉ : Flask sur 8000, pas 8001
 HEALTH_URL = "http://127.0.0.1:8000/health"
 
-def detect_llama_url():
-    possible_health_urls = [
-        "http://127.0.0.1:8000/health",  # Flask Llama
-        "http://localhost:8000/health",
-        "http://127.0.0.1:11434/health",
-    ]
-    for url in possible_health_urls:
-        try:
-            print(f"🔍 Test de connexion à: {url}")
-            response = requests.get(url, timeout=2)
-            if response.status_code == 200:
-                print(f"✅ Serveur Llama détecté à {url}")
-                # Retourner l'URL du chat, pas celle du health
-                base_url = url.replace('/health', '')
-                return f"{base_url}/api/chat/"
-        except Exception as e:
-            print(f"⚠️ Erreur connexion à {url}: {e}")
-            continue
-    print("❌ Aucune URL Llama détectée - Mode simulation activé")
-    return None
+# Verrou pour éviter les détections multiples simultanées
+import threading
+_detection_lock = threading.Lock()
+_last_detection_time = 0
+_detection_cooldown = 5  # Secondes entre deux détections
 
+def detect_llama_url(force=False):
+    """
+    Détecte l'URL du serveur Llama avec verrou pour éviter les appels multiples.
+    
+    Args:
+        force: Si True, ignore le cooldown et force la détection
+    """
+    global _last_detection_time, LLAMA_DETECTED
+    
+    # Vérifier le cooldown pour éviter trop de tentatives (sauf si force=True)
+    import time
+    current_time = time.time()
+    if not force and current_time - _last_detection_time < _detection_cooldown:
+        # Trop tôt depuis la dernière détection, retourner la valeur actuelle
+        return LLAMA_DETECTED
+    
+    with _detection_lock:
+        # Vérifier à nouveau après avoir acquis le verrou
+        if not force and current_time - _last_detection_time < _detection_cooldown:
+            return LLAMA_DETECTED
+        
+        _last_detection_time = current_time
+        
+        possible_health_urls = [
+            "http://127.0.0.1:8000/health",  # Flask Llama
+            "http://localhost:8000/health",
+        ]
+        
+        for url in possible_health_urls:
+            try:
+                print(f"🔍 Test de connexion à: {url}")
+                # ✅ Timeout augmenté à 5 secondes pour le chargement du modèle
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    print(f"✅ Serveur Llama détecté à {url}")
+                    # Retourner l'URL du chat, pas celle du health
+                    base_url = url.replace('/health', '')
+                    return f"{base_url}/api/chat/"
+            except requests.exceptions.Timeout:
+                print(f"⏱️ Timeout connexion à {url} (serveur peut être en cours de chargement)")
+                continue
+            except Exception as e:
+                print(f"⚠️ Erreur connexion à {url}: {type(e).__name__}")
+                continue
+        
+        print("❌ Aucune URL Llama détectée - Mode simulation activé")
+        return None
+
+# Variable globale pour stocker l'URL détectée
 LLAMA_DETECTED = detect_llama_url()
 
 # -----------------------------
-# ✅ FONCTION HEALTH (MANQUANTE)
+# ✅ FONCTION HEALTH (AMÉLIORÉE - Détection dynamique)
 # -----------------------------
 @api_view(["GET"])
 def health(request):
     """
     Endpoint de vérification de santé du serveur Django
     """
+    global LLAMA_DETECTED
     llama_status = "disconnected"
     llama_url = None
+    
+    # ✅ Réessayer de détecter Llama si pas encore détecté (détection dynamique)
+    # Mais seulement si le cooldown est respecté pour éviter les boucles
+    if not LLAMA_DETECTED:
+        print("🔄 Réessai de détection Llama...")
+        LLAMA_DETECTED = detect_llama_url()
     
     # Tester la connexion à Llama
     if LLAMA_DETECTED:
         try:
-            health_check = requests.get(HEALTH_URL, timeout=2)
+            # ✅ Timeout augmenté pour permettre au serveur de répondre
+            health_check = requests.get(HEALTH_URL, timeout=5)
             if health_check.status_code == 200:
                 llama_status = "connected"
                 llama_url = LLAMA_DETECTED
-        except:
+            else:
+                llama_status = "error"
+                print(f"⚠️ Llama répond avec code {health_check.status_code}")
+        except requests.exceptions.Timeout:
+            llama_status = "timeout"
+            print(f"⏱️ Timeout lors de la vérification de Llama (peut être en cours de chargement)")
+        except Exception as e:
             llama_status = "error"
+            print(f"⚠️ Erreur connexion Llama: {type(e).__name__}")
+    else:
+        # Réessayer une dernière fois (avec cooldown)
+        LLAMA_DETECTED = detect_llama_url()
+        if LLAMA_DETECTED:
+            try:
+                health_check = requests.get(HEALTH_URL, timeout=5)
+                if health_check.status_code == 200:
+                    llama_status = "connected"
+                    llama_url = LLAMA_DETECTED
+            except:
+                llama_status = "error"
     
     return Response({
         "status": "healthy",
@@ -84,6 +144,13 @@ def call_llama_api(prompt, max_tokens=150):
     """
     Appel au serveur Llama Flask. Retourne la réponse texte.
     """
+    global LLAMA_DETECTED
+    
+    # ✅ Réessayer de détecter Llama si pas encore détecté
+    if not LLAMA_DETECTED:
+        print("🔄 Réessai de détection Llama avant appel API...")
+        LLAMA_DETECTED = detect_llama_url()
+    
     if not LLAMA_DETECTED:
         return f"[Simulation] Réponse pour: {prompt[:50]}..."
 
@@ -104,9 +171,13 @@ def call_llama_api(prompt, max_tokens=150):
             return str(data)[:200]
         else:
             print(f"❌ Erreur API Llama: {response.status_code}")
+            # Réessayer la détection en cas d'erreur
+            LLAMA_DETECTED = detect_llama_url()
             return f"Erreur API Llama: {response.status_code}"
     except Exception as e:
         print(f"❌ Erreur connexion Llama: {str(e)}")
+        # Réessayer la détection en cas d'exception
+        LLAMA_DETECTED = detect_llama_url()
         return f"Erreur connexion Llama: {str(e)}"
 
 # -----------------------------
@@ -411,12 +482,24 @@ Fais un résumé friendly en 1-2 phrases maximum.'''
         return Response(response_data)
 
     except Exception as e:
+        import traceback
         print(f"❌ Erreur endpoint: {e}")
+        print(traceback.format_exc())
+        # Retourner un code d'erreur approprié pour que le frontend puisse le détecter
         return Response({
-            "ai_response": "Service de recherche voyage opérationnel",
+            "ai_response": f"Désolé, une erreur s'est produite lors du traitement de votre demande. {str(e)}",
             "annonces": generate_fallback_offers("Tunis", 100),
-            "error": str(e)
-        })
+            "error": str(e),
+            "detected_preferences": {},
+            "travel_intent": {},
+            "search_metadata": {
+                "destination": "Tunis",
+                "budget": 100,
+                "results_count": 0,
+                "llama_used": False,
+                "timestamp": datetime.now().isoformat()
+            }
+        }, status=500)
 
 # -----------------------------
 # AUTRES VUES

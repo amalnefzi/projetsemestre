@@ -85,12 +85,30 @@ export default function ChatAI() {
         setDetectedPrefs(data.detected_preferences);
       }
     },
-    onError: (error) => {
+    onError: (error: any) => {
       console.error('❌ Erreur chat:', error);
+      
+      // Message d'erreur plus informatif
+      let errorMsg = "Désolé, une erreur s'est produite. ";
+      
+      if (error.response) {
+        // Le serveur a répondu avec un code d'erreur
+        errorMsg += `Erreur ${error.response.status}: ${error.response.statusText}`;
+        if (error.response.data?.error) {
+          errorMsg += ` - ${error.response.data.error}`;
+        }
+      } else if (error.request) {
+        // La requête a été faite mais aucune réponse reçue
+        errorMsg += "Le serveur Django ne répond pas. Assurez-vous qu'il est démarré sur le port 8001. 🤔";
+      } else {
+        // Erreur lors de la configuration de la requête
+        errorMsg += error.message || "Erreur de connexion";
+      }
+      
       const errorMessage: ChatMessage = {
         id: Date.now(),
         type: 'ai',
-        message: "Désolé, une erreur s'est produite. Le serveur est-il démarré ? 🤔",
+        message: errorMsg,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
