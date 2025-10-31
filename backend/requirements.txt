@@ -1,15 +1,22 @@
-# Backend Python - Flask + Llama
+# Django et REST Framework
+Django==5.2.6
+djangorestframework==3.16.1
+django-cors-headers==4.9.0
+python-dotenv==1.1.1
+
+# Base de données MySQL
+mysqlclient==2.2.7
+
+# Flask et Llama
 Flask==3.0.0
 flask-cors==4.0.0
 gpt4all==2.5.0
+
+# Utilitaires
 requests==2.31.0
 beautifulsoup4==4.12.0
 lxml==4.9.3
 
-# Django (si tu l'utilises toujours)
-Django==5.0.0
-djangorestframework==3.14.0
-django-cors-headers==4.3.0
-
-# Utilitaires
-python-dotenv==1.0.0
+# Production (optionnel - décommenter pour déploiement)
+# gunicorn==21.2.0
+# whitenoise==6.6.0

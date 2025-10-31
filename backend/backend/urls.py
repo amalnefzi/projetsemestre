@@ -25,8 +25,10 @@ urlpatterns = [
     path('', views.home),
     path('admin/', admin.site.urls),
     
-    # Health
-    path('api/health/', views.health),
+    # Health - Alias pour faciliter les tests (sans slash final pour éviter 301)
+    path('health', views.health),  # ✅ Alias simple (sans slash)
+    path('health/', views.health),  # ✅ Alias avec slash
+    path('api/health/', views.health),  # ✅ Endpoint complet
     
     # Chat - Les 2 URLs pointent vers la même fonction
     path('api/chat/', views.intelligent_travel_chat),
