@@ -170,15 +170,17 @@ def call_llama_api(prompt, max_tokens=150):
                 return data["response"]
             return str(data)[:200]
         else:
-            print(f"❌ Erreur API Llama: {response.status_code}")
-            # Réessayer la détection en cas d'erreur
+            # En production on ne casse pas l'expérience utilisateur : on fallback
+            print(f"❌ Erreur API Llama: {response.status_code} -> fallback simulation")
+            # Réessayer la détection en cas d'erreur (non bloquant)
             LLAMA_DETECTED = detect_llama_url()
-            return f"Erreur API Llama: {response.status_code}"
+            return f"[Simulation] Réponse pour: {prompt[:50]}..."
     except Exception as e:
-        print(f"❌ Erreur connexion Llama: {str(e)}")
-        # Réessayer la détection en cas d'exception
+        # Ne pas exposer l'erreur brute au frontend; fallback
+        print(f"❌ Erreur connexion Llama: {str(e)} -> fallback simulation")
+        # Réessayer la détection en cas d'exception (non bloquant)
         LLAMA_DETECTED = detect_llama_url()
-        return f"Erreur connexion Llama: {str(e)}"
+        return f"[Simulation] Réponse pour: {prompt[:50]}..."
 
 # -----------------------------
 # VUE CHAT SIMPLE

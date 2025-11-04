@@ -2,9 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { useMutation } from '@tanstack/react-query';
 
-// ✅ Django tourne sur 8001 (avec Llama + Scraping intégré)
-const api = axios.create({ 
-  baseURL: 'http://127.0.0.1:8001'  // Django avec tout intégré
+// ✅ Utilise la variable d'environnement si définie, sinon 8001 par défaut (Django)
+const api = axios.create({
+  baseURL: (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:8001'
 });
 
 type ChatMessage = {
