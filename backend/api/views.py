@@ -10,12 +10,20 @@ from rest_framework.response import Response
 from rest_framework import serializers, status
 from django.db import connection
 from .models import Destination, UserPreference
+from urllib.parse import quote_plus
 
 # -----------------------------
 # CONFIGURATION DE LLAMA
 # -----------------------------
 LLAMA_URL = "http://127.0.0.1:8000/api/chat/"  # ✅ CORRIGÉ : Flask sur 8000, pas 8001
 HEALTH_URL = "http://127.0.0.1:8000/health"
+
+# -----------------------------
+# MODE GRATUIT (Sans APIs payantes ni scraping agressif)
+# -----------------------------
+# Quand activé, on évite toute requête HTTP de scraping et on renvoie uniquement
+# des deep links publics (Booking/Expedia/Airbnb/TripAdvisor/Google Flights).
+FREE_MODE = True
 
 # Verrou pour éviter les détections multiples simultanées
 import threading
@@ -170,15 +178,17 @@ def call_llama_api(prompt, max_tokens=150):
                 return data["response"]
             return str(data)[:200]
         else:
-            print(f"❌ Erreur API Llama: {response.status_code}")
-            # Réessayer la détection en cas d'erreur
+            # En production on ne casse pas l'expérience utilisateur : on fallback
+            print(f"❌ Erreur API Llama: {response.status_code} -> fallback simulation")
+            # Réessayer la détection en cas d'erreur (non bloquant)
             LLAMA_DETECTED = detect_llama_url()
-            return f"Erreur API Llama: {response.status_code}"
+            return f"[Simulation] Réponse pour: {prompt[:50]}..."
     except Exception as e:
-        print(f"❌ Erreur connexion Llama: {str(e)}")
-        # Réessayer la détection en cas d'exception
+        # Ne pas exposer l'erreur brute au frontend; fallback
+        print(f"❌ Erreur connexion Llama: {str(e)} -> fallback simulation")
+        # Réessayer la détection en cas d'exception (non bloquant)
         LLAMA_DETECTED = detect_llama_url()
-        return f"Erreur connexion Llama: {str(e)}"
+        return f"[Simulation] Réponse pour: {prompt[:50]}..."
 
 # -----------------------------
 # VUE CHAT SIMPLE
@@ -213,33 +223,45 @@ def analyze_travel_intent_with_llama(user_message):
     """
     Utilise Llama pour analyser l'intention de voyage.
     """
-    prompt = f"""Tu es un assistant d'analyse d'intention de voyage.Ton rôle est d'extraire les préférences STRICTEMENT au format JSON.Ne dis RIEN d'autre que l'objet JSON.
-
-Message: "{user_message}"
-
-Format JSON requis:
-{{
-    "destination": "ville principale",
-    "budget": nombre,
-    "type_hebergement": "hôtel/appartement/maison",
-    "duree": nombre de jours,
-    "personnes": nombre,
-    "interets": ["plage", "culture", "nature", "ville"]
-}}
-
-Exemple: 
-Message: "Je veux un hôtel pas cher à Tunis pour 3 jours"
-Réponse: {{"destination": "Tunis", "budget": 100, "type_hebergement": "hôtel", "duree": 3, "personnes": 2, "interets": ["ville"]}}
-
-Réponse JSON:"""
+    prompt = (
+        "Tu es un assistant d'analyse d'intention de voyage. "
+        "Ton rôle est d'extraire les préférences STRICTEMENT au format JSON. "
+        "Ne dis RIEN d'autre que l'objet JSON unique, sans texte autour.\n\n"
+        f"Message: \"{user_message}\"\n\n"
+        "Format JSON requis:\n"
+        "{\n"
+        "  \"destination\": \"ville principale\" | null,\n"
+        "  \"budget\": nombre | null,\n"
+        "  \"type_hebergement\": \"hôtel/appartement/maison\" | null,\n"
+        "  \"duree\": nombre | null,\n"
+        "  \"personnes\": nombre | null,\n"
+        "  \"interets\": [\"plage\", \"culture\", \"nature\", \"ville\"] | []\n"
+        "}\n\n"
+        "Réponse JSON:"
+    )
 
     response = call_llama_api(prompt)
     try:
-        json_match = re.search(r'\{[^}]+\}', response)
-        if json_match:
-            intent_data = json.loads(json_match.group())
-            print(f"🎯 Intention Llama: {intent_data}")
-            return intent_data
+        # Éviter de parser l'exemple si la réponse contient le prompt (mode simulation)
+        if response.startswith("[Simulation]"):
+            raise ValueError("Simulation -> fallback")
+
+        # Rechercher tous les objets JSON et préférer le dernier valide
+        candidates = re.findall(r'\{[\s\S]*?\}', response)
+        for raw in reversed(candidates):
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict) and "destination" in obj:
+                    print(f"🎯 Intention Llama: {obj}")
+                    return obj
+            except Exception:
+                continue
+
+        # Si la réponse entière est un JSON valide
+        obj = json.loads(response)
+        if isinstance(obj, dict):
+            print(f"🎯 Intention Llama direct: {obj}")
+            return obj
     except Exception as e:
         print(f"❌ Erreur parsing JSON Llama: {e}")
 
@@ -254,7 +276,7 @@ def extract_intent_manual(message):
     message_lower = message.lower()
     
     intent = {
-        "destination": "Tunis", # Destination par défaut
+        "destination": None, # Pas de contrainte locale: aucune destination par défaut
         "budget": 100,          # Budget par défaut (en DT, pour le scraping)
         "type_hebergement": "hôtel",
         "duree": 3,
@@ -262,7 +284,20 @@ def extract_intent_manual(message):
         "interets": []
     }
 
-    # Détection destination
+    # Détection destination (globale)
+    # 1) Regex basée sur prépositions courantes (à, vers, pour, to) en conservant la casse
+    try:
+        prepo_regex = re.compile(r"(?:\bà\b|\bvers\b|\bpour\b|\bto\b)\s+([A-ZÀÂÄÉÈÊËÎÏÔÖÛÜŸ][\w'’\-éèàùâäêëîïôöûüç]+(?:\s+[A-ZÀÂÄÉÈÊËÎÏÔÖÛÜŸ][\w'’\-éèàùâäêëîïôöûüç]+){0,3})")
+        m = prepo_regex.search(message)
+        if m:
+            candidate = m.group(1).strip()
+            # éviter de capter des mots trop génériques
+            if len(candidate) >= 3:
+                intent["destination"] = candidate
+    except Exception:
+        pass
+
+    # 2) Liste de villes connues rapides (fallback léger) sur message_lower
     if 'paris' in message_lower:
         intent["destination"] = "Paris"
     elif 'marrakech' in message_lower or 'maroc' in message_lower:
@@ -273,13 +308,48 @@ def extract_intent_manual(message):
         intent["destination"] = "Rome"
     elif 'dubai' in message_lower:
         intent["destination"] = "Dubaï"
-    # ✅ CORRECTION: Ajout des destinations tunisiennes spécifiques (pour override Tunis par défaut)
+    # Tunisie (toujours supportée mais non imposée)
     elif 'hammamet' in message_lower or 'hamamet' in message_lower:
         intent["destination"] = "Hammamet"
     elif 'sousse' in message_lower:
         intent["destination"] = "Sousse"
     elif 'djerba' in message_lower:
         intent["destination"] = "Djerba"
+    # 🌍 Pays/villes fréquents en minuscules (détection globale simple)
+    elif 'canada' in message_lower:
+        intent["destination"] = "Canada"
+    elif 'new york' in message_lower:
+        intent["destination"] = "New York"
+    elif 'london' in message_lower or 'londres' in message_lower:
+        intent["destination"] = "Londres"
+    elif 'tokyo' in message_lower:
+        intent["destination"] = "Tokyo"
+    elif 'madrid' in message_lower:
+        intent["destination"] = "Madrid"
+    elif 'berlin' in message_lower:
+        intent["destination"] = "Berlin"
+    elif 'istanbul' in message_lower:
+        intent["destination"] = "Istanbul"
+    elif 'barcelona' in message_lower:
+        intent["destination"] = "Barcelone"
+    elif 'montreal' in message_lower or 'montréal' in message_lower:
+        intent["destination"] = "Montréal"
+    elif 'quebec' in message_lower or 'québec' in message_lower:
+        intent["destination"] = "Québec"
+    elif 'toronto' in message_lower:
+        intent["destination"] = "Toronto"
+    elif 'vancouver' in message_lower:
+        intent["destination"] = "Vancouver"
+
+    # 3) Fallback ultra simple: si rien détecté mais le message contient un mot capitalisé non initial
+    if not intent["destination"]:
+        try:
+            tokens = re.findall(r"\b[A-ZÀÂÄÉÈÊËÎÏÔÖÛÜŸ][a-zàâäéèêëîïôöûüç'’\-]+\b", message)
+            if tokens:
+                # Prendre le dernier token capitalisé (souvent la ville en fin de phrase)
+                intent["destination"] = tokens[-1]
+        except Exception:
+            pass
 
     # Détection budget
     budget_match = re.search(r'(\d+)\s*(dt|dinars|euros?|€)', message_lower)
@@ -288,6 +358,22 @@ def extract_intent_manual(message):
         # Conversion Euro -> Dinars (approximation 1 EUR ≈ 3 TND)
         if 'euro' in message_lower or '€' in message_lower:
             intent["budget"] = intent["budget"] * 3
+
+    # Détection durée (nuits/jours)
+    try:
+        duree_match = re.search(r'(\d+)\s*(nuits?|jours?)', message_lower)
+        if duree_match:
+            intent["duree"] = int(duree_match.group(1))
+    except Exception:
+        pass
+
+    # Détection personnes
+    try:
+        pers_match = re.search(r'pour\s+(\d+)\s*(personnes?|pers|pax?)', message_lower)
+        if pers_match:
+            intent["personnes"] = int(pers_match.group(1))
+    except Exception:
+        pass
     
     # Détection intérêts (utilisation de "not in" pour éviter les doublons)
     if 'plage' in message_lower or 'mer' in message_lower:
@@ -308,8 +394,30 @@ def extract_intent_manual(message):
 # -----------------------------
 def scrape_real_travel_offers(destination, budget, personnes=2):
     annonces = []
-    print(f"🌐 Début scraping pour {destination}...")
+    print(f"🌐 Début préparation des offres pour {destination} (FREE_MODE={FREE_MODE})...")
 
+    # En mode gratuit: ne faire que des deep links (pas de scraping HTTP)
+    if FREE_MODE:
+        # Estimation très simple: budget (par nuit) * durée
+        estimated = None
+        try:
+            estimated = max(1, int(budget))
+            # La durée sera ajoutée côté appelant; ici on garde estimation par nuit
+        except Exception:
+            estimated = None
+        # prix_total_estime = prix_par_nuit * duree
+        estimated_total = None
+        try:
+            estimated_total = int(estimated) * 1  # durée inconnue ici (géré plus haut)
+        except Exception:
+            estimated_total = None
+        deep_links = build_deep_links(destination, adultes=personnes, estimated_price=estimated, estimated_total=estimated_total)
+        annonces.extend(deep_links)
+        if not annonces:
+            annonces = generate_fallback_offers(destination, budget)
+        return annonces[:10]
+
+    # Mode normal (si jamais vous désactivez FREE_MODE): tenter des scrapes légers + deep links
     try:
         ta_offers = scrape_tripadvisor(destination, budget)
         annonces.extend(ta_offers)
@@ -331,6 +439,18 @@ def scrape_real_travel_offers(destination, budget, personnes=2):
     except Exception as e:
         print(f"❌ Erreur Expedia: {e}")
 
+    try:
+        deep_links = build_deep_links(
+            destination,
+            adultes=personnes,
+            estimated_price=budget,
+            estimated_total=(budget * 1)
+        )
+        annonces.extend(deep_links)
+        print(f"🔗 Deep links ajoutés: {len(deep_links)}")
+    except Exception as e:
+        print(f"⚠️ Erreur deep links: {e}")
+
     if not annonces:
         annonces = generate_fallback_offers(destination, budget)
     return annonces[:10]
@@ -339,7 +459,8 @@ def scrape_tripadvisor(destination, budget):
     try:
         import random
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        search_url = f"https://www.tripadvisor.com/Search?q={destination}+hotel"
+        q = quote_plus(f"{destination} hotels")
+        search_url = f"https://www.tripadvisor.com/Search?q={q}"
         response = requests.get(search_url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         offers = []
@@ -354,7 +475,7 @@ def scrape_tripadvisor(destination, budget):
                 "nom": name,
                 "prix": price,
                 "note": rating,
-                "lien": f"https://www.tripadvisor.com",
+                "lien": search_url,
                 "source": "TripAdvisor"
             })
         return offers
@@ -375,11 +496,12 @@ def scrape_booking_simulation(destination, budget):
         price = random.randint(int(budget*0.5), int(budget*1.3))
         rating = round(random.uniform(3.8, 4.9), 1)
         if price <= budget * 1.2:
+            q = quote_plus(destination)
             offers.append({
                 "nom": hotel,
                 "prix": price,
                 "note": rating,
-                "lien": f"https://www.booking.com/searchresults.html?ss={destination}",
+                "lien": f"https://www.booking.com/searchresults.html?ss={q}",
                 "source": "Booking.com"
             })
     return offers
@@ -396,10 +518,84 @@ def scrape_expedia_simulation(destination, budget):
             "nom": f"{type_heb} {destination}",
             "prix": price,
             "note": rating,
-            "lien": f"https://www.expedia.fr/Hotel-Search?destination={destination}",
+            "lien": f"https://www.expedia.fr/Hotel-Search?destination={quote_plus(destination)}",
             "source": "Expedia"
         })
     return offers
+
+def build_deep_links(destination, checkin=None, checkout=None, adultes=2, estimated_price=None, estimated_total=None):
+    """
+    Génère des liens directs (deep links) vers des pages de réservation réelles
+    pour la destination demandée. Aucun scraping ni clé API requis.
+    """
+    q = quote_plus(destination) if destination else None
+
+    links = []
+
+    # Booking.com (hôtels)
+    booking_url = f"https://www.booking.com/searchresults.html?ss={q}" if q else "https://www.booking.com/"
+    if checkin and checkout:
+        booking_url += f"&checkin={checkin}&checkout={checkout}&group_adults={adultes}"
+    links.append({
+        "nom": f"Hôtels à {destination} (Booking)" if destination else "Hôtels (Booking)",
+        "prix": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_par_nuit": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_total_estime": int(estimated_total) if isinstance(estimated_total, (int, float)) else None,
+        "note": None,
+        "lien": booking_url,
+        "source": "Booking.com"
+    })
+
+    # Expedia (hôtels)
+    expedia_url = f"https://www.expedia.fr/Hotel-Search?destination={q}" if q else "https://www.expedia.fr/"
+    links.append({
+        "nom": f"Hôtels à {destination} (Expedia)" if destination else "Hôtels (Expedia)",
+        "prix": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_par_nuit": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_total_estime": int(estimated_total) if isinstance(estimated_total, (int, float)) else None,
+        "note": None,
+        "lien": expedia_url,
+        "source": "Expedia"
+    })
+
+    # Airbnb (logements)
+    airbnb_url = f"https://www.airbnb.com/s/{q}/homes" if q else "https://www.airbnb.com/"
+    links.append({
+        "nom": f"Logements à {destination} (Airbnb)" if destination else "Logements (Airbnb)",
+        "prix": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_par_nuit": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_total_estime": int(estimated_total) if isinstance(estimated_total, (int, float)) else None,
+        "note": None,
+        "lien": airbnb_url,
+        "source": "Airbnb"
+    })
+
+    # TripAdvisor (hôtels)
+    trip_url = (
+        f"https://www.tripadvisor.com/Search?q={quote_plus(destination + ' hotels')}"
+        if destination else "https://www.tripadvisor.com/"
+    )
+    links.append({
+        "nom": f"Hôtels à {destination} (TripAdvisor)" if destination else "Hôtels (TripAdvisor)",
+        "prix": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_par_nuit": int(estimated_price) if isinstance(estimated_price, (int, float)) else None,
+        "prix_total_estime": int(estimated_total) if isinstance(estimated_total, (int, float)) else None,
+        "note": None,
+        "lien": trip_url,
+        "source": "TripAdvisor"
+    })
+
+    # Google Flights (vols) — lien de recherche public
+    flights_url = f"https://www.google.com/travel/flights?q={q}" if q else "https://www.google.com/travel/flights"
+    links.append({
+        "nom": f"Vols vers {destination} (Google Flights)" if destination else "Vols (Google Flights)",
+        "prix": None,
+        "note": None,
+        "lien": flights_url,
+        "source": "Google"
+    })
+
+    return links
 
 def generate_fallback_offers(destination, budget):
     return [
@@ -442,31 +638,83 @@ def intelligent_travel_chat(request):
         print(f"📨 Message: {user_message}")
         travel_intent = analyze_travel_intent_with_llama(user_message)
 
-        destination = travel_intent.get("destination", "Tunis")
-        budget = travel_intent.get("budget", 100)
+        destination = travel_intent.get("destination") or ""
 
-        print(f"🌐 Scraping sites voyage pour {destination}...")
-        annonces = scrape_real_travel_offers(destination, budget)
+        # 🔧 Normalisation des nombres pour éviter True/False -> 1/0
+        def parse_int(value, default=None, minimum=1):
+            try:
+                if isinstance(value, bool):
+                    return default
+                if isinstance(value, (int, float)):
+                    iv = int(value)
+                else:
+                    s = str(value).strip()
+                    if not s:
+                        return default
+                    # retirer unités éventuelles (dt, €, pers, nuits)
+                    s = re.sub(r"[^0-9]", "", s)
+                    if not s:
+                        return default
+                    iv = int(s)
+                if iv < minimum:
+                    return minimum
+                return iv
+            except Exception:
+                return default
+
+        budget = parse_int(travel_intent.get("budget"), default=100, minimum=1)
+        duree = parse_int(travel_intent.get("duree"), default=1, minimum=1)
+        personnes = parse_int(travel_intent.get("personnes"), default=2, minimum=1)
+
+        print(f"🌐 Préparation d'offres pour {destination}...")
+        annonces = scrape_real_travel_offers(destination, budget, personnes=personnes)
         print(f"✅ {len(annonces)} annonces trouvées")
 
-        print("💬 Génération réponse avec Llama...")
-        prompt_reponse = f'''Tu es un assistant voyage expert. Fais un résumé concis.
+        print("💬 Génération réponse utilisateur...")
+        if FREE_MODE or not LLAMA_DETECTED:
+            if destination:
+                ai_response = (
+                    f"Super choix ! Je te propose des pistes pour {destination}. "
+                    f"Budget ~{budget} DT/nuit, durée {duree} nuit(s) pour {personnes} pers. "
+                    f"J'ai listé {len(annonces)} options; dis-moi tes dates pour affiner."
+                )
+            else:
+                ai_response = (
+                    f"J'ai listé des liens utiles pour commencer ta recherche. "
+                    f"Dis-moi une destination, des dates et un budget pour cibler les résultats."
+                )
+        else:
+            prompt_reponse = f'''Tu es un assistant voyage expert. Fais un résumé concis.
 
 Demande: "{user_message}"
 Destination: {destination}
 Budget: {budget} DT
+Durée: {duree} nuit(s) | Personnes: {personnes}
 Nombre d'offres trouvées: {len(annonces)}
 
 Fais un résumé friendly en 1-2 phrases maximum.'''
-
-        ai_response = call_llama_api(prompt_reponse)
+            ai_response = call_llama_api(prompt_reponse)
+            if isinstance(ai_response, str) and ai_response.startswith("[Simulation]"):
+                if destination:
+                    ai_response = (
+                        f"Voici quelques pistes pour {destination}. "
+                        f"J'ai trouvé {len(annonces)} options environ. "
+                        f"Dis-moi tes dates et ton budget précis pour affiner."
+                    )
+                else:
+                    ai_response = (
+                        f"J'ai listé des liens utiles pour explorer des offres. "
+                        f"Partage une destination, des dates et un budget pour des suggestions ciblées."
+                    )
 
         response_data = {
             "ai_response": ai_response,
             "annonces": annonces,
             "detected_preferences": {
-                "budget": travel_intent.get("budget"),
+                "budget": budget,
                 "destination": destination,
+                "duree": duree,
+                "personnes": personnes,
                 "interests": travel_intent.get("interets", [])
             },
             "travel_intent": travel_intent,
